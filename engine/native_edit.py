@@ -44,8 +44,7 @@ def segments(timeline):
 
 
 def basic_validation(timeline):
-    j.require(timeline.get('new_version') == '185.0.0' and timeline.get('version') == 360000,
-              'Only the verified 11.4 native timeline schema is accepted')
+    j.nd.validate_timeline_version(timeline, j.nd.doctor()['runtime_profile'])
     index = material_index(timeline)
     identifiers = set(index)
     end = 0
@@ -89,7 +88,7 @@ def load_source(value):
     j.require(len(project['timelines']) == 1 and project['timelines'][0]['id'] == timeline['id'],
               'Multi-timeline copies need a dedicated compatibility profile')
     if timeline.get('materials', {}).get('drafts'):
-        j.require(j.nd.doctor()['runtime_profile'] == compound.PROFILE, 'Compound copies require the captured 11.4.2 profile')
+        j.require(j.nd.doctor()['runtime_profile'] in compound.RUNTIME_PROFILES, 'Compound copies require a verified runtime profile')
         compound.check_sidecars(timeline, source, source, preserved)
     # Never duplicate a cloud identity or alter rights information to make a copy.
     j.require(not metadata.get('cloud_draft_sync') and not metadata.get('draft_is_cloud_temp_draft')
@@ -337,7 +336,7 @@ def apply_operations(timeline, metadata, operations, target):
         old_duration = selected.get('duration', 0)
         if local.get('op') == 'create_compound':
             j.require(set(local) == {'op', 'name'}, 'Invalid compound creation fields')
-            j.require(j.nd.doctor()['runtime_profile'] == compound.PROFILE, 'Compound creation requires the captured 11.4.2 profile')
+            j.require(j.nd.doctor()['runtime_profile'] in compound.RUNTIME_PROFILES, 'Compound creation requires a verified runtime profile')
             event = compound.wrap_all(selected, local['name'], target)
             events, created = [event], []
         else:
@@ -540,7 +539,22 @@ def preserved(expected, actual, path='', frame_tolerance=0, quantized=None):
     if isinstance(expected, dict):
         j.require(isinstance(actual, dict), 'Structure changed: ' + path)
         for key, value in expected.items():
+            if (key == 'new_version' and value == '185.0.0' and actual.get(key) == '187.0.0'
+                    and expected.get('version') == actual.get('version') == 360000
+                    and j.nd.doctor()['runtime_profile'] == 'jy14-headless-macos-11.5.3'):
+                continue
+            if key == 'hard_disk_id' and path.endswith('/last_modified_platform'):
+                j.require(isinstance(actual.get(key), str), 'Invalid native save provenance')
+                continue
             if key in {'update_time', 'create_time'}:
+                continue
+            # 11.5.3 normalizes the captured compound's empty default audio
+            # mapping to explicit 'none'. Only wholly default nodes are equivalent.
+            if (key == 'type' and value == '' and actual.get(key) == 'none'
+                    and re.search(r'/materials/sound_channel_mappings/[^/]+$', path)
+                    and not any(v for k, v in expected.items() if k not in {'id', 'type'})
+                    and not any(v for k, v in actual.items() if k not in {'id', 'type'})
+                    and j.nd.doctor()['runtime_profile'] == 'jy14-headless-macos-11.5.3'):
                 continue
             if key == 'has_audio' and re.search(r'/materials/videos/[^/]+$', path):
                 j.require(actual.get(key, True) == value, 'Preserved audio capability changed: ' + path)

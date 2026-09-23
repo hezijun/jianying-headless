@@ -1,4 +1,4 @@
-// Local, process-isolated adapter for the exact signed Jianying 11.4.2 engine.
+// Local, process-isolated adapter for the exact signed Jianying 11.4.2 / 11.5.3 engines.
 // No UI attachment, account session, network, or modifications to the app.
 #include <CommonCrypto/CommonDigest.h>
 #include <atomic>
@@ -19,9 +19,18 @@
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 namespace lvve {
-struct Draft; struct PersistentDraft; struct VEGlobalConfig;
+struct Draft;
+class MaterialDraft { public:
+  const std::string& get_combination_id() const;
+  void set_draft(const std::shared_ptr<Draft>&);
+};
+class DraftQuery { public:
+  static std::vector<std::shared_ptr<MaterialDraft>> getAllMaterialDraft(std::shared_ptr<Draft>, bool);
+};
+struct PersistentDraft; struct VEGlobalConfig;
 namespace adapter { struct VEAdapterConfig; }
 std::shared_ptr<Draft> GetDraftFromJson(const std::string&);
 std::string GetJsonFromDraft(const std::shared_ptr<Draft>&);
@@ -83,7 +92,15 @@ namespace lyra::wrapper { class VeWrapper { public:
   std::shared_ptr<lvve::adapter::VEAdapterConfig> getVeAdapterConfig();
 }; }
 
-static std::atomic<bool> compile_done{false}, compile_error{false}, restore_done{false};
+struct ExportAbi {
+  size_t restore, constructor;
+  bool captured_masks;
+};
+static const ExportAbi abi1142{0x21234d0, 0x2681f98, true};
+static const ExportAbi abi1153{0x21b9388, 0x2759398, true};
+static const ExportAbi* selected_abi = nullptr;
+
+static std::atomic<bool> compile_done{false}, compile_error{false}, restore_done{false}, completion_done{false};
 static std::atomic<int> callback_error{0};
 static std::mutex logging_mutex;
 
@@ -99,6 +116,11 @@ static void nativeLog(const char*, const char* file, int line, const char* funct
   if (line == 1203 && file && std::strcmp(file, "operator()") == 0 &&
       std::strstr(rendered, "[ve_export_impl.cpp:operator():1203][LYRA] export_callback: VE_INFO_COMPILE_DONE"))
     compile_done = true;
+  // 11.5.3 emits COMPILE_DONE before its asynchronous completion task.
+  // Await the latter before closing the session; otherwise the last frame can be lost.
+  if (selected_abi == &abi1153 && line == 1300 && file && std::strcmp(file, "operator()") == 0 &&
+      std::strstr(rendered, "[ve_export_impl.cpp:operator():1300][LYRA] VeExportImpl::completion_callback_async this ptr is valid"))
+    completion_done = true;
   if (std::strstr(rendered, "export_callback: VE_ERROR_COMPILE")) compile_error = true;
   // Nested clips restore asynchronously. Exporting after an arbitrary delay
   // can race the child timeline and produce audio-only or incomplete output.
@@ -130,8 +152,12 @@ static char* pinnedEngineBase() {
     hash += "0123456789abcdef"[byte >> 4];
     hash += "0123456789abcdef"[byte & 15];
   }
-  return hash == "632c8ddd09ff4a54f876cd8142eb505055ee26d944199506b230949b7e106bd1"
-         ? reinterpret_cast<char*>(info.dli_fbase) : nullptr;
+  if (hash == "632c8ddd09ff4a54f876cd8142eb505055ee26d944199506b230949b7e106bd1")
+    selected_abi = &abi1142;
+  else if (hash == "9ac52035d017977eb27cf51b9468847e28cce951153502659881636598f81101")
+    selected_abi = &abi1153;
+  else return nullptr;
+  return reinterpret_cast<char*>(info.dli_fbase);
 }
 
 template <typename T> static T field(const void* pointer, size_t offset) {
@@ -153,7 +179,7 @@ static void configureCapturedMasks(const std::shared_ptr<void>& wrapper) {
   // manages construction, copies and destruction without guessed destructors.
   auto adapter = static_cast<lyra::wrapper::VeWrapper*>(wrapper.get())->getVeAdapterConfig();
   if (!adapter) throw std::runtime_error("native adapter configuration missing");
-  // This offset is used by addVideo 0x3c97268 in the pinned 11.4.2 library.
+  // Verified config string: 11.4.2 addVideo 0x3c97268; 11.5.3 use at 0x3cf46e4.
   auto& hub = *reinterpret_cast<std::string*>(reinterpret_cast<char*>(adapter.get()) + 0x7e8);
   if (!hub.empty()) throw std::runtime_error("unexpected native default effect resource path");
   const std::filesystem::path root = "/Applications/VideoFusion-macOS.app/Contents/Resources/lumi_js_resources_video";
@@ -169,6 +195,26 @@ static void configureCapturedMasks(const std::shared_ptr<void>& wrapper) {
   // No account, license, feature-gate or global application settings change.
   hub = root.string();
   std::cerr << "JY_NATIVE_MASK_RUNTIME " << hub << '\n';
+}
+
+static std::shared_ptr<lvve::Draft> completeDraft(const std::string& json,
+                                                const std::filesystem::path& folder, int depth = 0) {
+  if (depth > 8) throw std::runtime_error("compound depth exceeded");
+  auto draft = lvve::GetDraftFromJson(json);
+  if (!draft) throw std::runtime_error("compound parse failed");
+  auto materials = lvve::DraftQuery::getAllMaterialDraft(draft, false);
+  for (const auto& material : materials) {
+    const auto& id = material->get_combination_id();
+    if (id.size() != 36 || id.find_first_not_of("0123456789abcdefABCDEF-") != std::string::npos)
+      throw std::runtime_error("invalid compound identity");
+    auto path = folder / ("compound-" + id + ".json");
+    if (!std::filesystem::is_regular_file(path) || std::filesystem::is_symlink(path))
+      throw std::runtime_error("compound staged input missing");
+    std::ifstream source(path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+    material->set_draft(completeDraft(content, folder, depth + 1));
+  }
+  return draft;
 }
 
 int main(int argc, char** argv) {
@@ -190,6 +236,8 @@ int main(int argc, char** argv) {
         timeout < 5 || timeout > 43200) throw std::runtime_error("invalid export settings");
     char* base = pinnedEngineBase();
     if (!base) throw std::runtime_error("engine differs from the supported ABI");
+    if (captured_masks && !selected_abi->captured_masks)
+      throw std::runtime_error("captured masks are not verified on this engine");
     std::ifstream source(input, std::ios::binary);
     std::string json((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
     if (json.empty()) throw std::runtime_error("empty timeline input");
@@ -212,10 +260,11 @@ int main(int argc, char** argv) {
     long tid = field<long>(initialized.get(), 0x38);
     auto binding = std::make_shared<lyra::DraftInitReqStruct>();
     binding->tid = tid;
-    binding->draft = lvve::GetDraftFromJson(json);
+    binding->draft = selected_abi == &abi1153
+        ? completeDraft(json, input.parent_path()) : lvve::GetDraftFromJson(json);
     if (!binding->draft) throw std::runtime_error("runtime draft decode failed");
     checkResponse(server.invoke(binding, sid), "runtime draft initialization failed");
-    reinterpret_cast<void (*)(long, bool, long)>(base + 0x21234d0)(sid, true, tid);
+    reinterpret_cast<void (*)(long, bool, long)>(base + selected_abi->restore)(sid, true, tid);
     const auto restore_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout);
     while (!restore_done && std::chrono::steady_clock::now() < restore_deadline) pump(server, 20);
     if (!restore_done) throw std::runtime_error("native timeline restoration did not finish");
@@ -235,7 +284,7 @@ int main(int argc, char** argv) {
     void* storage = ::operator new(0x3d8);
     std::memset(storage, 0, 0x3d8);
     // The engine's own constructor/destructor manage its packed ExportConfig.
-    reinterpret_cast<void (*)(void*)>(base + 0x2681f98)(storage);
+    reinterpret_cast<void (*)(void*)>(base + selected_abi->constructor)(storage);
     auto request = std::shared_ptr<lyra::ReqStruct>(reinterpret_cast<lyra::ReqStruct*>(storage), [](auto* p) {
       auto table = *reinterpret_cast<void***>(p);
       reinterpret_cast<void (*)(void*)>(table[0])(p);
@@ -246,7 +295,7 @@ int main(int argc, char** argv) {
     request->tid = tid;
     *reinterpret_cast<std::string*>(reinterpret_cast<char*>(storage) + 0x48) = output.string();
     auto config = reinterpret_cast<char*>(storage) + 0x60;
-    // Offsets confirmed in ToVeCompileSetting 0x3b7805c in the pinned binary.
+    // Same fields in ToVeCompileSetting: 11.4.2 0x3b7805c; 11.5.3 0x3c6b4f4.
     std::memcpy(config + 0x3f, &width, sizeof(width));
     std::memcpy(config + 0x43, &height, sizeof(height));
     config[0x47] = 0;  // Native hardware-encode preference, not an encoder guarantee.
@@ -258,9 +307,10 @@ int main(int argc, char** argv) {
       if (code) callback_error = code;
     }, sid);
     auto until = std::chrono::steady_clock::now() + std::chrono::seconds(timeout);
-    while (!compile_done && !compile_error && !callback_error && std::chrono::steady_clock::now() < until)
+    while ((!compile_done || (selected_abi == &abi1153 && !completion_done)) && !compile_error && !callback_error && std::chrono::steady_clock::now() < until)
       pump(server, 20);
-    bool success = compile_done && !compile_error && !callback_error;
+    bool success = compile_done && (selected_abi != &abi1153 || completion_done) && !compile_error && !callback_error;
+    if (completion_done) std::cerr << "JY_NATIVE_COMPLETION_DONE\n";
     if (success) pump(server, 500);  // Drain the native completion/encoder-close task.
     request.reset(); binding.reset(); project.reset(); session.reset(); initialized.reset();
     server.closeSession(sid, [] {});

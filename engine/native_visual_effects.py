@@ -10,7 +10,7 @@ import uuid
 
 import native_resources as resources
 
-NAMES = {'filter': {'hd-monochrome'}, 'effect': {'light-shake'}, 'text': {'orange-outline'}}
+NAMES = {'filter': {'hd-monochrome'}, 'effect': {'light-shake'}, 'text': {'orange-outline', 'yellow-retro'}}
 BUCKETS = {'filter': 'effects', 'effect': 'video_effects'}
 PARAMS = {'range': ('effects_adjust_range', .15), 'speed': ('effects_adjust_speed', .33)}
 

@@ -460,7 +460,7 @@ def native_media_path(value, target):
 
 
 def verify_structure(timeline, metadata, plan, assets, target, allow_native_resource_cache=False):
-    require(timeline['new_version'] == '185.0.0' and timeline['version'] == 360000, 'Unexpected native timeline version')
+    nd.validate_timeline_version(timeline, nd.doctor()['runtime_profile'])
     require(all(timeline['canvas_config'][k] == plan['canvas'][k] for k in ('width', 'height')), 'Canvas changed')
     require(timeline.get('fps', 30) == plan['canvas']['fps'], 'Timeline frame rate changed')
     require(metadata['draft_fold_path'] == str(target) and metadata['draft_name'] == target.name, 'Draft identity mismatch')

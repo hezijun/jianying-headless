@@ -1,0 +1,68 @@
+{
+  "schema": "jy14-native-resource-catalog/v1",
+  "runtime_profile": "jy14-headless-macos-11.5.3",
+  "resources": {
+    "text-effect/yellow-retro": {
+      "source": "@home/Movies/JianyingPro/User Data/Cache/artistEffect/7404298204189052160/957c5993aede2de67e901fabc2d7b791",
+      "files": {
+        "1723947568082.png": {
+          "sha256": "89bda1f5a3a8bd8a90a5230ca17338e2d6c49e7e30e53f8cf1c77efe624d32ab",
+          "size": 155759
+        },
+        "config.json": {
+          "sha256": "8f22b06ec22ce960eda217b134c555bd347655906600a03afb6bdc5f497744c4",
+          "size": 143
+        },
+        "cover_icon.png": {
+          "sha256": "dfc30448539d554bd5613a0e8a919484a8320a9cf6801a4bdcb568ef91a48a50",
+          "size": 8132
+        },
+        "effectStyle.json": {
+          "sha256": "b125673bd008091c48c43ab161f8231c7b7ba4f56a2b5aea33f45147cdccd96f",
+          "size": 1843
+        }
+      },
+      "tree_sha256": "111bb150da54cd464467cf02fa600f47da2d47a5647aa6bc6bfedbe4ee40c897",
+      "material": {
+        "effect_id": "7404298204189052160",
+        "resource_id": "7404298204189052160",
+        "third_resource_id": "0",
+        "name": "黄色复古立体字",
+        "type": "text_effect",
+        "sub_type": "none",
+        "value": 1.0,
+        "category_id": "panel-text-flower",
+        "category_name": "panel-text-flower",
+        "source_platform": 1,
+        "request_id": "2026092312114148340511C543444665BD",
+        "color_match_info": {},
+        "multi_language_current": "",
+        "beauty_face_auto_retouch_info": {}
+      },
+      "capture": "local 11.5.3 synthetic draft: work/advanced-1153/yellow-retro-native-timeline.json",
+      "capture_sha256": "cc8d2872907da2d2ce7d3caf1383404edb15a9275501c02de704e7fa16b96f66",
+      "runtime_profiles": [
+        "jy14-headless-macos-11.5.3"
+      ],
+      "usage": {
+        "ui_label_observed": "native export permitted",
+        "paid_badge_observed": false,
+        "entitlement_verified": false,
+        "redistribution_authorized": false,
+        "scope": "local use; native UI export succeeded on this machine"
+      }
+    }
+  },
+  "native_generated_cache_files": {
+    "effect/light-shake": {
+      "AmazingFeature/Library/ShaderData/1fe96443d2e2eea49ef2202f8a56fd26/shaderMetal/f443ba63a627600bf408d3ed98fe788e_4c5f3b563ad8e58fb10d5673d2364278_26.5.0.metallib": {
+        "sha256": "fe697e1c5a77f3679b7e90b4cedce43cffa219c673632fd594bea0df64f3709d",
+        "size": 30096
+      },
+      "AmazingFeature/Library/ShaderData/cac811388c1e389d11bae79f24e00020/shaderMetal/f443ba63a627600bf408d3ed98fe788e_9cdfd0c87a2a30eb8148378379a0d73a_26.5.0.metallib": {
+        "sha256": "44442d1d81a53670d5a0cda67dbcb1d5efb70079db62152098a6115bb711f41d",
+        "size": 35936
+      }
+    }
+  }
+}
