@@ -88,6 +88,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_catalog_relocates_paths_without_changing_resource_identity(self):
         original = json.loads((ROOT / 'engine/native-resource-catalog.json').read_bytes())
+        original['resources'].update(json.loads((ROOT / 'engine/native-resource-catalog-11.5.3.json').read_bytes())['resources'])
         with patch.object(resources.Path, 'home', return_value=self.folder):
             relocated = resources.catalog()
         for key, entry in relocated['resources'].items():

@@ -12,18 +12,31 @@ import time
 
 import jy14_headless as j
 
-PROFILE = 'jy14-headless-macos-11.4.2'
+PROFILE = 'jy14-headless-macos-11.4.2'  # Captured blueprint provenance.
+RUNTIME_PROFILES = {PROFILE, 'jy14-headless-macos-11.5.3'}
 BLUEPRINT = Path(__file__).with_name('compound-blueprint.json')
 SUBDRAFT_TOKEN = '##_subdraft_placeholder_536E1D01-0D97-4295-AA34-0CC47A957B82_##/'
 SIDECARS = {'draft_file_path': 'draft_content.json', 'draft_cover_path': 'draft_cover.jpg',
             'draft_config_path': 'sub_draft_config.json'}
 
 
+def is_inline(node):
+    # All three references must be absent; partial/lost path sets are not inline.
+    return not any(key in node for key in SIDECARS)
+
+
 def require_publishable(root):
-    """Keep live registration closed until native save/reopen preserves sidecars."""
-    j.require(not root.get('materials', {}).get('drafts'),
-              'Compound live registration is blocked: native 11.4.2 save loses the subdraft project directory; '
-              'offline construction/export does not establish editable persistence')
+    owners = [owner for owner, _ in graph(root) if owner is not None]
+    if not owners:
+        return
+    j.require(j.nd.doctor()['runtime_profile'] == 'jy14-headless-macos-11.5.3' and
+              all(all(isinstance(owner.get(key), str) and owner[key] for key in SIDECARS) for owner in owners),
+              'Compound live registration is blocked without verified 11.5.3 sidecars')
+    j.require(all(not child.get('materials', {}).get('drafts') for owner, child in graph(root) if owner is not None),
+              'Compound live registration is blocked for multiple nested levels; native UI drops deeper children')
+    import native_ui_compat
+    j.require(native_ui_compat.state()['async_enabled'] is False,
+              'Compound live registration is blocked: run ui-compat before each cold UI launch')
 
 
 def graph(root):
@@ -94,6 +107,10 @@ def normalize_paths(value, target):
 
 
 def paths(node, target):
+    if is_inline(node):
+        j.require(j.nd.doctor()['runtime_profile'] == 'jy14-headless-macos-11.5.3',
+                  'Inline compounds require the captured 11.5.3 profile')
+        return {}
     child_id = node['draft']['id']
     j.require(re.fullmatch(r'[A-Fa-f0-9-]{36}', child_id), 'Unsafe compound directory identity')
     result = {}
@@ -114,6 +131,9 @@ def check_sidecars(root, target, folder, preserved):
         if owner is None:
             continue
         resolved = paths(owner, target)
+        if not resolved:
+            checked.append({'timeline_id': child['id'], 'material_id': owner['id'], 'storage': 'embedded-inline'})
+            continue
         physical = {key: folder / path.relative_to(target) for key, path in resolved.items()}
         for path in physical.values():
             j.require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(folder.resolve()),
@@ -242,6 +262,10 @@ def wrap_all(timeline, name, target):
     owner['draft'] = child
     for key, filename in SIDECARS.items():
         owner[key] = str(target / 'subdraft' / child_id / filename)
+    if j.nd.doctor()['runtime_profile'] == 'jy14-headless-macos-11.5.3':
+        for node in materials.get('sound_channel_mappings', []):
+            if node.get('type') == '':
+                node['type'] = 'none'
     video = materials['videos'][0]
     video.update(duration=child['duration'], material_name=name,
                  width=child['canvas_config']['width'], height=child['canvas_config']['height'])
@@ -263,6 +287,8 @@ def write_sidecars(root, target, folder, source, write_owned, rebase):
         if owner is None:
             continue
         resolved = paths(owner, target)
+        if not resolved:
+            continue
         physical = {key: folder / path.relative_to(target) for key, path in resolved.items()}
         content = physical['draft_file_path']
         if content.exists():

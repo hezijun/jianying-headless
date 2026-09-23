@@ -32,18 +32,20 @@ def project_root():
 PROJECT_ROOT = project_root()
 BACKEND = PROJECT_ROOT / 'engine'
 PINS = {
-    'jy14_headless.py': 'fd9ec517f35e810b3e38b340a5b344861c7fb53e56053b1c39ed9e25ddbf437f',
+    'native_ui_compat.py': 'e16d91ef56a216bd42f20274770de5dcaab36b701a3b20b6d459dbda8d1da4e0',
+    'native_ui_settings.cpp': '5c1bc9febf9a7c921b8b5e4c30f3901ae5f82ce2f93ed48d67695e57266c1ade',
+    'jy14_headless.py': '18d27abebb380e5bf69467d037cbf7ae3876782f46cd8421d274b5a1a0b4b5c0',
     'native_motion.py': '5d743caaa38c921779166e5663d36f72a0c3fdb130a690ac3942a7adcf62d6c2',
     'native_effects.py': 'c46b2fc9221dd613f220564b752e532f8f3753dd5595aaffc24f41d5236e4e97',
-    'native_resources.py': '0b0f3048902f7ebb4629882f2739508a828784183c949786da4024ae24bee369',
-    'native_visual_effects.py': 'f8a7a2d899383a5932deabe1c7adf644c61e37016e788d361ccd6ef6c95ac30d',
+    'native_resources.py': 'b70333bef48bfe4f9152c623265dcfa4860c62b76a80a47a87447955b22ce61e',
+    'native_visual_effects.py': 'f652ba781979dc8d64f61b064d258351f529573fd07aa85d573625656a3e6cea',
     'native-resource-catalog.json': '68021d765aa212436891056d06f205ef96365e1b687a3fdc28691f00a50105c5',
-    'native_compound.py': '7b0df5a74d75d8f5623b11de3f4307569f84a4c6127ec316ed6fd133fc8d0d79',
+    'native_compound.py': 'b054dd8b5a3f8d0211185bc0564bb18da8b04a40844d872db50fc3b0050729b4',
     'compound-blueprint.json': '9cba9435053280abf9072d5eaccb8586c841b11dac6854b32daf9cbdba76af8e',
-    'native_edit.py': '647a63e4346ae5514b7071a9de37f237bb1ff61abf2c399cb06683a6cd9bc777',
-    'native_export.py': 'dccdfaeefc44fd5419f9cd16a0f00518f7d64b5fca69f236e77bd70b998c6920',
-    'native_export.cpp': '3d74947a8b05c8ca31b0dc3909e0a08be4818985646c00cc64d63fb0645cee25',
-    'headless_runtime.py': 'bff4c918721295a2d98c61f9ef10a9a386e3b3a79f4c8bdeaee8682b9fa748c1',
+    'native_edit.py': 'c75652ab89ba829619889b34c40b6e8fd0cc1b558988c86a21134722c7912b55',
+    'native_export.py': 'dddd779f19c7e23432d607f605ae8e922a7fec1a67a3e576606c2a4e83abdb00',
+    'native_export.cpp': 'e7502e45ee09016e486256b682c5163c6f4e8a5b5a0b10d9f623325f9ca8d2fa',
+    'headless_runtime.py': '48786d05df45d07808ea6a125cfbb1c0b839ca4e32aa8371a50ea93c6942b476',
     'blueprint.json': '91f7eddad5bff9af23eb88b53713c180e3e3d4054edd469140cfa9aa56bc1dc9',
 }
 
@@ -54,6 +56,9 @@ for name, expected in PINS.items():
 
 sys.path.insert(0, str(BACKEND))
 entrypoint = 'jy14_headless.py'
+if len(sys.argv) > 1 and sys.argv[1] == 'ui-compat':
+    entrypoint = 'native_ui_compat.py'
+    del sys.argv[1]
 if len(sys.argv) > 1 and sys.argv[1] == 'edit':
     entrypoint = 'native_edit.py'
     del sys.argv[1]

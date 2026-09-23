@@ -19,6 +19,12 @@ EXPECTED_CODEC_SHA = 'b6533eb5eb1eea58dfa74fb1d16d3bb580970fe881f587605d358af174
 PROFILES = {
     '11.4.0': 'a1693070036a6678bb5db35f71d2105812ad24a2370e7e91c78712cc0d6455f3',
     '11.4.2': '632c8ddd09ff4a54f876cd8142eb505055ee26d944199506b230949b7e106bd1',
+    '11.5.3': '9ac52035d017977eb27cf51b9468847e28cce951153502659881636598f81101',
+}
+CODECS = {
+    '11.4.0': ('jy14_codec_hardened_11_4', EXPECTED_CODEC_SHA),
+    '11.4.2': ('jy14_codec_hardened_11_4', EXPECTED_CODEC_SHA),
+    '11.5.3': ('jy_codec_hardened_11_5_3', '0c84d54ef5e1abbd72243c96c6a441da1e1a50441b7e539da3fb63c24f53b734'),
 }
 
 
@@ -67,11 +73,12 @@ def main():
     signature = run(['/usr/bin/codesign', '-dv', '--verbose=4', str(APP)], env=env)
     require('TeamIdentifier=X2JNK7LY8J' in signature.stderr.splitlines(), 'Unexpected Jianying signing identity')
 
-    destination = BRIDGE / 'jy14_codec_hardened_11_4'
+    codec_name, expected_codec_sha = CODECS[version]
+    destination = BRIDGE / codec_name
     if destination.exists() or destination.is_symlink():
-        require(digest(destination) == EXPECTED_CODEC_SHA and os.access(destination, os.X_OK),
+        require(digest(destination) == expected_codec_sha and os.access(destination, os.X_OK),
                 'An unexpected codec file already exists; it was not overwritten')
-        print(json.dumps({'status': 'already-valid', 'codec_sha256': EXPECTED_CODEC_SHA,
+        print(json.dumps({'status': 'already-valid', 'codec_sha256': expected_codec_sha,
                           'app_version': version, 'network_called': False}))
         return
 
@@ -91,12 +98,12 @@ def main():
     actual = digest(built)
     report = {'schema': 'jianying-headless-codec-build/v1', 'status': 'built', 'app_version': version,
               'compiler': compiler, 'command': command, 'codec_sha256': actual,
-              'expected_codec_sha256': EXPECTED_CODEC_SHA, 'stderr': result.stderr,
+              'expected_codec_sha256': expected_codec_sha, 'stderr': result.stderr,
               'network_called': False, 'official_library_copied': False, 'app_modified': False}
     with (job / 'build-report.json').open('x', encoding='utf-8') as stream:
         json.dump(report, stream, ensure_ascii=False, indent=2)
         stream.write('\n')
-    require(actual == EXPECTED_CODEC_SHA,
+    require(actual == expected_codec_sha,
             'Compiler output differs from the reviewed codec. No runtime pin was changed; inspect ' + str(job))
     require(digest(library) == PROFILES[version], 'The native library changed while compiling')
     for name, expected in manifest['source_files'].items():
@@ -107,7 +114,7 @@ def main():
         stream.write(built.read_bytes())
         stream.flush()
         os.fsync(stream.fileno())
-    require(digest(destination) == EXPECTED_CODEC_SHA, 'Installed local codec fingerprint differs')
+    require(digest(destination) == expected_codec_sha, 'Installed local codec fingerprint differs')
     print(json.dumps({'status': 'built-and-verified', 'codec_sha256': actual, 'app_version': version,
                       'audit_directory': str(job), 'network_called': False, 'app_modified': False}, ensure_ascii=False))
 

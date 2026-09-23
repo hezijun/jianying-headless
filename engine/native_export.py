@@ -23,7 +23,7 @@ import native_resources as resources
 import native_compound as compound
 
 HERE = Path(__file__).resolve().parent
-PROFILE = 'jy14-headless-macos-11.4.2'
+PROFILES = {'jy14-headless-macos-11.4.2', 'jy14-headless-macos-11.5.3'}
 SCHEMA = 'jy14-native-export/v1'
 
 
@@ -74,10 +74,14 @@ def captured_video_effect(node):
 
 def captured_filter_or_text_effect(node):
     """Exact local captures, with use restrictions preserved, not granted."""
-    keys = {'filter': 'filter/hd-monochrome', 'text_effect': 'text-effect/orange-outline'}
+    keys = {'filter': ['filter/hd-monochrome'],
+            'text_effect': ['text-effect/orange-outline', 'text-effect/yellow-retro']}
     kind = node.get('type')
     j.require(isinstance(kind, str) and kind in keys, 'Unverified native filter/text effect type')
-    entry = resources.definition(keys[kind])
+    matches = [key for key in keys[kind] if resources.definition(key)['material']['resource_id'] == node.get('resource_id')]
+    j.require(len(matches) == 1, 'Unverified native filter/text effect identity')
+    key = matches[0]
+    entry = resources.definition(key)
     for field in ('type', 'effect_id', 'resource_id', 'third_resource_id', 'sub_type',
                   'source_platform', 'category_id'):
         j.require(node.get(field) == entry['material'][field],
@@ -85,7 +89,7 @@ def captured_filter_or_text_effect(node):
     j.require(isinstance(node.get('path'), str) and node['path'], 'Missing captured filter/text effect path')
     j.number(node.get('value'), 'Native filter/text effect strength', 0, 1)
     j.require(kind != 'text_effect' or node['value'] == 1, 'Unverified text effect strength')
-    return keys[kind], entry
+    return key, entry
 
 
 def check_filter_and_text_bindings(timeline):
@@ -208,6 +212,19 @@ def local_supported_features(timeline):
             'warnings': warnings}
 
 
+def check_profile_features(timeline, profile):
+    """Scope new ABI support to the local multitrack sample actually rendered."""
+    j.require(profile in PROFILES, 'No native export ABI for this runtime')
+    if profile != 'jy14-headless-macos-11.5.3':
+        return
+    rows = compound.graph(timeline) if timeline.get('materials', {}).get('drafts') else [(None, timeline)]
+    for _, child in rows:
+        for node in child.get('materials', {}).get('effects', []):
+            key, _ = captured_filter_or_text_effect(node)
+            j.require(key == 'text-effect/yellow-retro',
+                      'Native export on 11.5.3 requires verified native resource authorization: ' + key)
+
+
 def supported_features(timeline):
     # This feature-only helper also accepts partial noncompound fixtures. Full
     # structural validation remains mandatory in verified_build before export.
@@ -231,7 +248,7 @@ def verified_build(path):
         record = edit.verify_build(path)
     else:
         raise ValueError('Export requires a supported verified headless/edit build')
-    j.require(record['runtime_profile'] == PROFILE, 'Export requires the captured 11.4.2 build profile')
+    j.require(record['runtime_profile'] in PROFILES, 'No native export ABI for this build profile')
     timeline = j.nd.helper()._decrypt_metadata_in_memory(path / 'draft/draft_info.json')
     compound.validate(timeline, edit.basic_validation)
     j.require(timeline.get('duration', 0) > 0 and timeline.get('tracks'), 'Cannot export an empty timeline')
@@ -378,7 +395,7 @@ def settings_for(timeline, bitrate, timeout):
 
 
 def sandbox_profile(out):
-    literal = json.dumps(str(out))
+    literal = json.dumps(str(out), ensure_ascii=False)
     return ('(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n'
             '(deny file-read-data (subpath "/Users"))\n'
             '(deny file-read-data (subpath "/Library/Keychains"))\n'
@@ -413,9 +430,56 @@ def validate_probe(info, settings, duration_us, audio_expected):
             'major_brand': fmt['tags']['major_brand']}
 
 
+def stage_compound_inputs(timeline, out):
+    """Supply each embedded child to 11.5.3's shallow runtime deserializer."""
+    files = {}
+    for owner, child in compound.graph(timeline):
+        if owner is None:
+            continue
+        identity = owner['combination_id']
+        j.require(len(identity) == 36 and all(c in '0123456789abcdefABCDEF-' for c in identity),
+                  'Invalid compound identity for export')
+        name = 'compound-' + identity + '.json'
+        j.require(name not in files, 'Duplicate compound export identity')
+        path = out / name
+        j.require(not path.exists() and not path.is_symlink(), 'Compound staged input already exists')
+        j.write(path, child)
+        files[name] = {'sha256': j.nd.digest(path), 'size': path.stat().st_size}
+    return files
+
+
+def verify_runtime_graph(expected, actual):
+    # A decodable MP4 can be black if GetDraftFromJson drops deeper children.
+    compound.check_order(expected, actual)
+    expected_rows = {child['id']: child for _, child in compound.graph(expected)}
+    for _, child in compound.graph(actual):
+        wanted = expected_rows[child['id']]
+        j.require(child.get('duration') == wanted.get('duration'), 'Runtime timeline duration changed')
+        for left, right in zip(wanted.get('tracks', []), child.get('tracks', [])):
+            for source, rendered in zip(left.get('segments', []), right.get('segments', [])):
+                for key in ('material_id', 'source_timerange', 'target_timerange'):
+                    left_value, right_value = source.get(key), rendered.get(key)
+                    if key.endswith('_timerange'):
+                        left_value = {'start': 0, **left_value} if isinstance(left_value, dict) else left_value
+                        right_value = {'start': 0, **right_value} if isinstance(right_value, dict) else right_value
+                    j.require(left_value == right_value, 'Runtime clip source/timing changed')
+
+
+def frame_complete_or_retry(profile, media, attempt):
+    if profile != 'jy14-headless-macos-11.5.3' or media['frame_delta'] == 0:
+        return True
+    j.require(media['frame_delta'] == -1 and attempt < 3,
+              'Frame-exact native export failed; incomplete attempts retained')
+    return False
+
+
 def run(build, out, bitrate=4_000_000, timeout=600):
     build, record, timeline = verified_build(build)
+    check_profile_features(timeline, record['runtime_profile'])
     capabilities = supported_features(timeline)
+    if record['runtime_profile'] == 'jy14-headless-macos-11.5.3':
+        capabilities.update(content_scope='local video, source audio, plain text, cuts, constant speed, picture-in-picture, linear keyframes, six static masks, dissolve, light-shake, yellow-retro text and offline compounds',
+                            mask_export='six shapes rendered and inspected on 11.5.3')
     settings = settings_for(timeline, bitrate, timeout)
     job = Path(out)
     j.require(job.is_absolute() and not job.exists() and not job.is_symlink(), 'Export job must be a new absolute directory')
@@ -423,7 +487,8 @@ def run(build, out, bitrate=4_000_000, timeout=600):
     j.require(not job.resolve().is_relative_to(build) and not job.resolve().is_relative_to(j.nd.DRAFT_ROOT),
               'Export job cannot be inside a build or live draft')
     runtime = j.nd.validate_runtime()
-    j.require(runtime['runtime_profile'] == PROFILE, 'No native export ABI for this runtime')
+    j.require(runtime['runtime_profile'] in PROFILES and runtime['runtime_profile'] == record['runtime_profile'],
+              'Native export runtime must match the verified build profile')
     job = j.nd.fresh_directory(job)
     started = time.monotonic()
     evidence = {'schema': SCHEMA, 'status': 'preparing', 'build': str(build),
@@ -434,6 +499,8 @@ def run(build, out, bitrate=4_000_000, timeout=600):
                 'acceptance_boundaries': capabilities}
     try:
         staged, files = stage_timeline(timeline, record, build / 'draft', job)
+        if runtime['runtime_profile'] == 'jy14-headless-macos-11.5.3':
+            files.update(stage_compound_inputs(staged, job))
         j.write(job / 'timeline.json', staged)
         timeline_hash = j.nd.digest(job / 'timeline.json')
         j.write(job / 'inputs.json', {'files': files, 'timeline_sha256': timeline_hash})
@@ -466,24 +533,49 @@ def run(build, out, bitrate=4_000_000, timeout=600):
                 'root': str(root), 'from_signed_app_bundle': True, 'account_data_used': False,
                 'config_sha256': j.nd.digest(root / 'config.json'),
                 'javascript_sha256': j.nd.digest(root / 'js/video/video.js')}
-        with (job / 'native.stdout.log').open('xb') as stdout, (job / 'native.stderr.log').open('xb') as stderr:
-            os.chmod(stdout.name, 0o600); os.chmod(stderr.name, 0o600)
-            try:
-                result = subprocess.run(command, cwd=job, stdout=stdout, stderr=stderr, env=env, timeout=timeout + 30)
-            except subprocess.TimeoutExpired as error:
-                raise ValueError('Native export timed out; partial output retained') from error
-        evidence['native_returncode'] = result.returncode
-        evidence['native_completion_event'] = 'JY_NATIVE_EXPORT_DONE' in (job / 'native.stdout.log').read_text()
-        evidence['native_restore_completion_event'] = 'JY_NATIVE_RESTORE_DONE' in (job / 'native.stderr.log').read_text()
-        j.require(result.returncode == 0 and evidence['native_completion_event'] and evidence['native_restore_completion_event'],
-                  'Native restoration/export did not complete successfully')
-        probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
-                                                    '-of', 'json', str(output)], timeout=60))
-        j.write(job / 'ffprobe.json', probe)
-        audio_expected = any(bool(child['materials'].get('audios')) or any(
-            v.get('has_audio', True) for v in child['materials'].get('videos', [])
-            if v.get('type') == 'video' and v.get('path')) for _, child in compound.graph(timeline))
-        evidence['media'] = validate_probe(probe, settings, timeline['duration'], audio_expected)
+        evidence['native_attempts'] = []
+        for attempt in range(1, 4):
+            with (job / 'native.stdout.log').open('xb') as stdout, (job / 'native.stderr.log').open('xb') as stderr:
+                os.chmod(stdout.name, 0o600); os.chmod(stderr.name, 0o600)
+                try:
+                    result = subprocess.run(command, cwd=job, stdout=stdout, stderr=stderr, env=env, timeout=timeout + 30)
+                except subprocess.TimeoutExpired as error:
+                    raise ValueError('Native export timed out; partial output retained') from error
+            evidence['native_returncode'] = result.returncode
+            evidence['native_completion_event'] = 'JY_NATIVE_EXPORT_DONE' in (job / 'native.stdout.log').read_text()
+            evidence['native_async_completion_event'] = 'JY_NATIVE_COMPLETION_DONE' in (job / 'native.stderr.log').read_text()
+            if runtime['runtime_profile'] == 'jy14-headless-macos-11.5.3':
+                j.require(evidence['native_async_completion_event'], 'Native asynchronous completion was not observed')
+            evidence['native_restore_completion_event'] = 'JY_NATIVE_RESTORE_DONE' in (job / 'native.stderr.log').read_text()
+            j.require(result.returncode == 0 and evidence['native_completion_event'] and evidence['native_restore_completion_event'],
+                      'Native restoration/export did not complete successfully')
+            if runtime['runtime_profile'] == 'jy14-headless-macos-11.5.3':
+                verify_runtime_graph(staged, j.read_json(job / 'runtime-timeline.json'))
+                evidence['runtime_timeline_structure_verified'] = True
+            probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
+                                                        '-of', 'json', str(output)], timeout=60))
+            j.write(job / 'ffprobe.json', probe)
+            audio_expected = any(bool(child['materials'].get('audios')) or any(
+                v.get('has_audio', True) for v in child['materials'].get('videos', [])
+                if v.get('type') == 'video' and v.get('path')) for _, child in compound.graph(timeline))
+            evidence['media'] = validate_probe(probe, settings, timeline['duration'], audio_expected)
+            media = evidence['media']
+            evidence['native_attempts'].append({'attempt': attempt, 'frames': media['frames'],
+                                               'expected_frames': media['expected_frames'],
+                                               'frame_delta': media['frame_delta']})
+            if frame_complete_or_retry(runtime['runtime_profile'], media, attempt):
+                break
+            # Same immutable input, fresh native process. Never pad/duplicate frames.
+            archived = job / ('incomplete-attempt-' + str(attempt))
+            archived.mkdir(mode=0o700)
+            for name in ('native.stdout.log', 'native.stderr.log', 'runtime-timeline.json', 'ffprobe.json', 'render.mp4'):
+                (job / name).rename(archived / name)
+            j.require(all(j.nd.digest(job / name) == item['sha256'] for name, item in files.items()) and
+                      j.nd.digest(job / 'timeline.json') == timeline_hash, 'Input changed before native retry')
+        evidence['frame_exact'] = evidence['media']['frame_delta'] == 0
+        if not evidence['frame_exact']:
+            capabilities['warnings'].append({'code': 'legacy-one-frame-tolerance',
+                                            'message': 'Legacy native output is not frame-exact'})
         decoded = subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-i', str(output), '-f', 'null', '-'],
                                  capture_output=True, timeout=timeout)
         j.write(job / 'decode.stderr.log', decoded.stderr)
@@ -501,6 +593,9 @@ def run(build, out, bitrate=4_000_000, timeout=600):
         j.write(job / 'result.json', evidence)
         return evidence
     except Exception as error:
+        partial = job / 'render.mp4'
+        if partial.is_file() and not partial.is_symlink():
+            partial.rename(job / 'partial-render.mp4')
         evidence.update(status='failed', error=str(error), partial_artifacts_retained=True)
         j.write(job / 'result.json', evidence)
         raise
@@ -516,7 +611,7 @@ def main():
     try:
         result = run(args.build, args.out, args.bitrate, args.timeout)
         print(json.dumps({k: result[k] for k in ('status', 'output', 'media', 'full_decode_passed',
-                                                'source_build_unchanged', 'elapsed_seconds',
+                                                'source_build_unchanged', 'elapsed_seconds', 'frame_exact', 'native_attempts',
                                                 'acceptance_boundaries')}, ensure_ascii=False))
     except Exception as error:
         print('Native export failed: ' + str(error), file=sys.stderr)

@@ -16,6 +16,9 @@ import headless_runtime as rt
 HERE = Path(__file__).resolve().parent
 CATALOG_SHA = '68021d765aa212436891056d06f205ef96365e1b687a3fdc28691f00a50105c5'
 SHAPES = ('circle', 'rectangle', 'line', 'mirror', 'star', 'heart')
+PREVIEW_ONLY_1153 = {'filter/hd-monochrome'}
+CATALOG_1153_SHA = 'dbdfe8b2d3a3a1e2f661bf397b2f80cc9e45325bdbb3da6618c03755a9ce1cca'
+VERIFIED_1153 = {'mask/' + shape for shape in SHAPES} | {'transition/dissolve', 'effect/light-shake', 'text-effect/yellow-retro'}
 
 
 def require(value, message):
@@ -69,6 +72,16 @@ def catalog():
             require(not relative.is_absolute() and '..' not in relative.parts, 'Invalid catalog home-relative path')
             return str(Path.home() / relative)
         return item
+    value = expand_home(value)
+    supplement = HERE / 'native-resource-catalog-11.5.3.json'
+    require(rt.digest(supplement) == CATALOG_1153_SHA, 'Native 11.5.3 resource catalog changed')
+    extra = json.loads(supplement.read_bytes())
+    require(extra['schema'] == value['schema'] and extra['runtime_profile'] == 'jy14-headless-macos-11.5.3',
+            'Unsupported native resource supplement')
+    require(not set(extra['resources']).intersection(value['resources']), 'Duplicate captured resource')
+    value['resources'].update(extra['resources'])
+    for key, files in extra.get('native_generated_cache_files', {}).items():
+        value['resources'][key].setdefault('native_generated_cache_files', {}).update(files)
     return expand_home(value)
 
 
@@ -100,10 +113,14 @@ def prepare(plan, folder, runtime):
     if not keys:
         return []
     data = catalog()
-    require(runtime['runtime_profile'] == data['runtime_profile'], 'Native resources need their captured runtime profile')
+    require(runtime['runtime_profile'] == data['runtime_profile'] or
+            (runtime['runtime_profile'] == 'jy14-headless-macos-11.5.3' and set(keys) <= (VERIFIED_1153 | PREVIEW_ONLY_1153)),
+            'Native resources need their captured or separately verified runtime profile')
     records = []
     for key in keys:
         entry = definition(key)
+        require(runtime['runtime_profile'] in entry.get('runtime_profiles', [data['runtime_profile'], 'jy14-headless-macos-11.5.3']),
+                'Resource is not verified for this runtime profile')
         source = Path(entry['source'])
         require(source.is_absolute() and source.resolve(strict=True) == source,
                 'Native resource source must be the captured canonical directory')

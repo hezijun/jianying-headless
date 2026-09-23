@@ -13,6 +13,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parent.parent
 LOCAL_DIRS = {'.git', 'work', '__pycache__', '.pytest_cache', '.venv'}
 LOCAL_CODEC = 'bridge/jy14_codec_hardened_11_4'
+LOCAL_CODECS = {LOCAL_CODEC, 'bridge/jy_codec_hardened_11_5_3'}
 SUFFIXES = {'.py', '.cpp', '.h', '.json', '.md', '.yaml', '.txt'}
 SPECIAL = {'.gitignore', 'NOTICE', 'LICENSE'}
 PATTERNS = {
@@ -48,7 +49,7 @@ def source_files():
         for name in names:
             path = Path(folder) / name
             relative = path.relative_to(ROOT).as_posix()
-            if relative == LOCAL_CODEC:
+            if relative in LOCAL_CODECS or relative == '.git':
                 continue
             require(path.is_file() and not path.is_symlink(), 'Nonregular source: ' + relative)
             require(path.suffix in SUFFIXES or name in SPECIAL, 'Unexpected source type: ' + relative)
@@ -91,10 +92,14 @@ def main():
         if name == Path(LOCAL_CODEC).name and not (ROOT / LOCAL_CODEC).exists():
             continue
         require(digest(ROOT / 'bridge' / name) == expected, 'Runtime IO/codec pin differs: ' + name)
+    for name, expected in set(literal(runtime, 'CODECS').values()):
+        codec = ROOT / 'bridge' / name
+        if codec.exists():
+            require(not codec.is_symlink() and digest(codec) == expected, 'Profile codec differs: ' + name)
     require(digest(ROOT / 'engine/native-resource-catalog.json') ==
             literal(ROOT / 'engine/native_resources.py', 'CATALOG_SHA'), 'Resource catalog pin differs')
 
-    if (ROOT / '.git').is_dir():
+    if (ROOT / '.git').exists():
         tracked = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT, check=True, capture_output=True).stdout
         names = {name.decode() for name in tracked.split(b'\x00') if name}
         require(names <= set(inventory), 'Git includes a file outside the checked source inventory')
